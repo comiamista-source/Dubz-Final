@@ -1,0 +1,175 @@
+name: Dubz Final
+
+# ============================================================================
+# Dubz Final  -  clean video-only dubbing pipeline.
+#   Drop video files into the Drive INBOX, press Run, dubbed files land in
+#   the Drive OUTBOX. Originals are archived. No YouTube / yt-dlp / WARP /
+#   lip-sync / link files - just video in -> dubbed video out.
+#   Maximum matrix fan-out (one parallel job per video).
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      src:
+        description: "Source language"
+        default: "Hindi"
+      target:
+        description: "Target language"
+        default: "English"
+      genre:
+        description: "Genre"
+        default: "monologue"
+      speakers:
+        description: "Number of speakers"
+        default: "1"
+      chunk:
+        description: "Chunk length seconds"
+        default: "60"
+      workers:
+        description: "Parallel chunk workers per video"
+        default: "8"
+      tries:
+        description: "Retries per chunk"
+        default: "5"
+      inbox:
+        description: "Drive inbox folder"
+        default: "Dubz/DubInbox2"
+      outbox:
+        description: "Drive output folder"
+        default: "Dubz/DubDone"
+
+concurrency:
+  group: dubz-final-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  SRC: ${{ github.event.inputs.src || 'Hindi' }}
+  TGT: ${{ github.event.inputs.target || 'English' }}
+  GENRE: ${{ github.event.inputs.genre || 'monologue' }}
+  SPEAKERS: ${{ github.event.inputs.speakers || '1' }}
+  CHUNK: ${{ github.event.inputs.chunk || '60' }}
+  WORKERS: ${{ github.event.inputs.workers || '8' }}
+  TRIES: ${{ github.event.inputs.tries || '5' }}
+  INBOX: ${{ github.event.inputs.inbox || 'Dubz/DubInbox2' }}
+  OUTBOX: ${{ github.event.inputs.outbox || 'Dubz/DubDone' }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+      count: ${{ steps.build.outputs.count }}
+    steps:
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash || \
+            (curl -fsSLO https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
+             unzip -o rclone-current-linux-amd64.zip && sudo cp rclone-*/rclone /usr/bin/ && sudo chmod +x /usr/bin/rclone)
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+      - name: Build matrix from inbox video files
+        id: build
+        run: |
+          rclone lsf "gdrive:${INBOX}" --files-only > all.txt 2>/dev/null || true
+          grep -iE '\.(mp4|mkv|mov|webm|avi|m4v|ts)$' all.txt > vids.txt || true
+          COUNT=$(wc -l < vids.txt | tr -d ' ')
+          echo "Found $COUNT video(s) in ${INBOX}:"; cat vids.txt || true
+          ITEMS=$(python3 - <<'PY'
+import json
+items=[]
+with open("vids.txt") as f:
+    for line in f:
+        n=line.strip()
+        if n: items.append({"ref": n})
+print(json.dumps(items))
+PY
+)
+          echo "matrix={\"item\":$ITEMS}" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+  dub:
+    needs: scan
+    if: ${{ needs.scan.outputs.count != '0' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 256
+      matrix: ${{ fromJson(needs.scan.outputs.matrix) }}
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python3 -m pip install -q --upgrade pip requests
+          curl -fsSL https://rclone.org/install.sh | sudo bash || \
+            (curl -fsSLO https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
+             unzip -o rclone-current-linux-amd64.zip && sudo cp rclone-*/rclone /usr/bin/ && sudo chmod +x /usr/bin/rclone)
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+      - name: Get the video from inbox
+        id: get
+        env:
+          REF: ${{ matrix.item.ref }}
+        run: |
+          mkdir -p input output
+          if ! rclone lsf "gdrive:${INBOX}/${REF}" >/dev/null 2>&1; then
+            echo "::notice::${REF} no longer in ${INBOX} - already handled."
+            echo "have=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          rclone copy "gdrive:${INBOX}/${REF}" input/ --drive-chunk-size 64M -v
+          IN=$(ls input/ 2>/dev/null | head -n1)
+          if [ -z "$IN" ]; then
+            echo "::error::Could not download ${REF}"; echo "have=no" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          echo "have=yes" >> "$GITHUB_OUTPUT"; echo "Got: $IN"
+      - name: Dub this video
+        if: steps.get.outputs.have == 'yes'
+        env:
+          DUB_BASE_URL: ${{ secrets.DUB_BASE_URL }}
+          REF: ${{ matrix.item.ref }}
+        run: |
+          IN=$(ls input/ | head -n1)
+          echo "==> Dubbing: $IN"
+          COMMON="--src $SRC --target $TGT --genre $GENRE --speakers $SPEAKERS --dir $GITHUB_WORKSPACE/output --chunk $CHUNK --workers $WORKERS --tries $TRIES"
+          python dub_video.py "$GITHUB_WORKSPACE/input/$IN" $COMMON || true
+          WORKDIR=$(ls -d "$GITHUB_WORKSPACE"/work_* 2>/dev/null | head -n1)
+          if [ -n "$WORKDIR" ] && [ -d "$WORKDIR/chunks" ]; then
+            MAX_PASSES=5; PASS=0
+            while :; do
+              TOTAL=$(ls "$WORKDIR/chunks"/part_*.mp4 2>/dev/null | wc -l)
+              DONE=$(ls "$WORKDIR/chunks"/dub_*.mp4 2>/dev/null | wc -l)
+              MISSING=$(( TOTAL - DONE ))
+              echo "::notice::$IN - $DONE/$TOTAL chunks done, $MISSING missing (pass $PASS)."
+              [ "$MISSING" -le 0 ] && { echo "All chunks complete."; break; }
+              PASS=$(( PASS + 1 ))
+              [ "$PASS" -gt "$MAX_PASSES" ] && { echo "::warning::$MISSING chunk(s) still missing."; break; }
+              PREV=$DONE
+              python dub_video.py "$WORKDIR/chunks" $COMMON || true
+              NOWDONE=$(ls "$WORKDIR/chunks"/dub_*.mp4 2>/dev/null | wc -l)
+              [ "$NOWDONE" -le "$PREV" ] && { echo "No new chunks; cooling 30s..."; sleep 30; }
+            done
+          fi
+          if [ -n "$(ls -A output/ 2>/dev/null)" ]; then
+            rclone copy output/ "gdrive:${OUTBOX}" --transfers 2 --drive-chunk-size 64M -v
+            rclone moveto "gdrive:${INBOX}/${REF}" "gdrive:${INBOX}/archive/${REF}" -v || \
+              echo "::warning::Could not archive ${REF}."
+            echo "==> $IN done -> ${OUTBOX}."
+          else
+            echo "::error::$IN produced no output."; exit 1
+          fi
+      - name: Backup copy in Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dubbed-${{ strategy.job-index }}
+          path: output/**
+          retention-days: 30
+          if-no-files-found: ignore
