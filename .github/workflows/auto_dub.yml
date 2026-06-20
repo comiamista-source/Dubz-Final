@@ -75,18 +75,11 @@ jobs:
         run: |
           rclone lsf "gdrive:${INBOX}" --files-only > all.txt 2>/dev/null || true
           grep -iE '\.(mp4|mkv|mov|webm|avi|m4v|ts)$' all.txt > vids.txt || true
-          COUNT=$(wc -l < vids.txt | tr -d ' ')
-          echo "Found $COUNT video(s) in ${INBOX}:"; cat vids.txt || true
-          ITEMS=$(python3 - <<'PY'
-import json
-items=[]
-with open("vids.txt") as f:
-    for line in f:
-        n=line.strip()
-        if n: items.append({"ref": n})
-print(json.dumps(items))
-PY
-)
+          COUNT=$(grep -c . vids.txt || echo 0)
+          echo "Found $COUNT video(s) in ${INBOX}:"
+          cat vids.txt || true
+          # Build JSON matrix with jq: [{"ref":"file1.mp4"}, ...]
+          ITEMS=$(jq -R -s -c 'split("\n") | map(select(length>0)) | map({ref: .})' vids.txt)
           echo "matrix={\"item\":$ITEMS}" >> "$GITHUB_OUTPUT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
