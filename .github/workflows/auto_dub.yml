@@ -32,6 +32,9 @@ on:
       tries:
         description: "Retries per chunk"
         default: "5"
+      skip:
+        description: "Skip ranges - keep original audio (e.g. 0-30,end-45)"
+        default: ""
       inbox:
         description: "Drive inbox folder"
         default: "Dubz/DubInbox2"
