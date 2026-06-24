@@ -446,7 +446,17 @@ def build_synced_audio(info, workdir):
     log("Building timestamp-anchored audio (no drift)...")
     usable = [it for it in info if Path(it["dub"]).exists()]
     if not usable:
-        raise RuntimeError("no chunks were dubbed successfully - nothing to build")
+        # Nothing dubbed - still emit a full-length SILENT track so the original
+        # video uploads at full size/length (output no matter what).
+        total = sum(it["len"] for it in info) or probe_duration(info[0]["part"])
+        log("No chunks dubbed; emitting full-length silent audio so the "
+            "original video still uploads.", icon="!", color=C.YEL)
+        full_audio = workdir / "_synced_audio.m4a"
+        cmd = [FF, "-y", "-f", "lavfi", "-t", str(max(total, 0.1)),
+               "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+               "-c:a", "aac", "-b:a", "192k", str(full_audio)]
+        subprocess.run(cmd, capture_output=True, text=True)
+        return full_audio
     if len(usable) < len(info):
         log(f"NOTE: {len(info) - len(usable)} chunk(s) missing; those spans will be "
             f"silent. Re-run later to fill them (finished chunks are cached).",
@@ -517,7 +527,7 @@ def main():
                     help="Parallel dub jobs. 0 (default) = all chunks at once, no limit.")
     ap.add_argument("--genre", default="monologue")
     ap.add_argument("--speakers", type=int, default=1)
-    ap.add_argument("--tries", type=int, default=6)
+    ap.add_argument("--tries", type=int, default=1)  # instant fallback: no retry loop
     ap.add_argument("--skip", default="",
                     help="Comma ranges to KEEP ORIGINAL audio (not dub), e.g. 0-30,end-45. Use 'end' for the tail.")
     ap.add_argument("--turbo", action="store_true",
@@ -689,6 +699,22 @@ def main():
     safe = "".join(c if c.isalnum() or c in " -_.()" else "_" for c in stem)
     out_path = out_dir / f"{safe} - {args.target} DUB.mp4"
     mux(src_video, audio, out_path)
+
+    # Always write a manifest of which chunks failed (silent spans), with their
+    # timestamp ranges, so you can manually re-dub just those next run.
+    if failed:
+        man = out_dir / f"{safe} - FAILED_CHUNKS.txt"
+        with open(man, "w", encoding="utf-8") as fh:
+            fh.write(f"Video: {out_path.name}\n")
+            fh.write(f"{len(failed)} chunk(s) are SILENT (failed this run). "
+                     f"Re-run and re-dub these spans:\n\n")
+            for idx in sorted(failed):
+                it = info[idx]
+                s0 = it["start"]; s1 = it["start"] + it["len"]
+                fh.write(f"  chunk {idx+1:03d}  {_fmt_dur(s0)} - {_fmt_dur(s1)}  "
+                         f"(part {Path(it['part']).name})\n")
+        log(f"Wrote failed-chunk manifest: {man.name} ({len(failed)} silent span(s)).",
+            icon="!", color=C.YEL)
 
     final_dur = probe_duration(out_path)
     print()
