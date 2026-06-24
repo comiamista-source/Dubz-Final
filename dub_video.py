@@ -715,6 +715,25 @@ def main():
                          f"(part {Path(it['part']).name})\n")
         log(f"Wrote failed-chunk manifest: {man.name} ({len(failed)} silent span(s)).",
             icon="!", color=C.YEL)
+        # Also copy the RAW original part files for the failed chunks, so they can
+        # be re-dubbed manually without re-splitting. They go in a subfolder named
+        # after the video, which is uploaded to Drive alongside the output.
+        import shutil as _sh
+        fail_dir = out_dir / f"{safe} - FAILED_CHUNKS"
+        fail_dir.mkdir(parents=True, exist_ok=True)
+        for idx in sorted(failed):
+            it = info[idx]
+            src_part = Path(it["part"])
+            if src_part.exists():
+                s0 = _fmt_dur(it["start"]); s1 = _fmt_dur(it["start"] + it["len"])
+                dst = fail_dir / f"chunk_{idx+1:03d}__{s0}-{s1}__{src_part.name}"
+                try:
+                    _sh.copy2(src_part, dst)
+                except Exception as _e:
+                    log(f"could not copy failed part {src_part.name}: {_e}",
+                        icon="!", color=C.YEL)
+        log(f"Copied {len(failed)} raw failed-chunk file(s) to {fail_dir.name}/",
+            icon="!", color=C.YEL)
 
     final_dur = probe_duration(out_path)
     print()
