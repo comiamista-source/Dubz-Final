@@ -251,6 +251,65 @@ def load_existing_chunks(folder):
     return info, acc, chunks_dir
 
 
+def parse_skip_ranges(spec, total_dur):
+    """'0-30,end-45' -> list of (start,end) secs to keep original (not dub).
+    'end' resolves to total_dur; 'end-45' means the last 45 seconds."""
+    ranges = []
+    if not spec:
+        return ranges
+    for piece in str(spec).split(","):
+        piece = piece.strip().lower()
+        if not piece:
+            continue
+        if "-" not in piece:
+            continue
+        a, b = piece.split("-", 1)
+        def val(x, is_end=False):
+            x = x.strip()
+            if x == "end":
+                return total_dur
+            try:
+                n = float(x)
+            except ValueError:
+                return None
+            return n
+        # handle the "end-45" form -> last 45s
+        if a.strip() == "end":
+            try:
+                back = float(b.strip())
+            except ValueError:
+                continue
+            ranges.append((max(0.0, total_dur - back), total_dur))
+            continue
+        s = val(a); e = val(b, True)
+        if s is None or e is None:
+            continue
+        if e <= s:
+            continue
+        ranges.append((max(0.0, s), min(total_dur, e)))
+    return ranges
+
+
+def chunk_in_skip(item, skip_ranges):
+    """True if this chunk overlaps any keep-original range (>50% overlap)."""
+    cs = item["start"]; ce = item["start"] + item["len"]
+    for (s, e) in skip_ranges:
+        overlap = max(0.0, min(ce, e) - max(cs, s))
+        if overlap > 0 and item["len"] > 0 and (overlap / item["len"]) >= 0.5:
+            return True
+    return False
+
+
+def copy_original_audio_chunk(item, ff):
+    """Write the chunk's ORIGINAL audio into its dub_*.mp4 slot (no dubbing)."""
+    import subprocess as _sp
+    out = item["dub"]
+    cmd = [ff, "-y", "-i", str(item["part"]),
+           "-vn", "-c:a", "aac", "-b:a", "192k", str(out)]
+    r = _sp.run(cmd, capture_output=True, text=True)
+    return r.returncode == 0 and out.exists()
+
+
 def dub_chunk(item, src_lang, target_lang, genre, speakers, max_tries, progress):
     part, out = item["part"], item["dub"]
     name = part.stem
@@ -288,7 +347,12 @@ def dub_chunk(item, src_lang, target_lang, genre, speakers, max_tries, progress)
         except Exception as e:
             last = e
             progress[item["i"]] = f"retry {attempt} ({_scrub(e)[:40]})"
+            if attempt < max_tries:
+                log(f"chunk {item['i']+1} retry {attempt+1}/{max_tries}: "
+                    f"{_scrub(e)[:80]}", icon=G_RETRY, color=C.YEL)
             time.sleep(5)
+    log(f"chunk {item['i']+1} FAILED after {max_tries} tries: {_scrub(last)[:80]}",
+        icon=G_FAIL, color=C.RED)
     progress[item["i"]] = f"FAILED: {_scrub(last)}"
     return False
 
@@ -454,6 +518,8 @@ def main():
     ap.add_argument("--genre", default="monologue")
     ap.add_argument("--speakers", type=int, default=1)
     ap.add_argument("--tries", type=int, default=6)
+    ap.add_argument("--skip", default="",
+                    help="Comma ranges to KEEP ORIGINAL audio (not dub), e.g. 0-30,end-45. Use 'end' for the tail.")
     ap.add_argument("--turbo", action="store_true",
                     help="Smaller chunks + faster polling: more pieces dub at once.")
     ap.add_argument("--poll", type=int, default=0,
@@ -513,6 +579,25 @@ def main():
         stem = src_video.stem
 
     total = len(info)
+
+    # --- Keep-original ranges (intro/outro music): copy original audio,
+    #     never send these chunks to the dubber. ---
+    skip_ranges = parse_skip_ranges(args.skip, total_dur)
+    if skip_ranges:
+        pretty = ", ".join(f"{int(s)}-{int(e)}s" for s, e in skip_ranges)
+        log(f"Keeping ORIGINAL audio (not dubbing) for: {pretty}",
+            icon="*", color=C.MAG)
+        kept = 0
+        for it in info:
+            if chunk_in_skip(it, skip_ranges) and not it["dub"].exists():
+                if copy_original_audio_chunk(it, FF):
+                    kept += 1
+                else:
+                    log(f"chunk {it['i']+1}: could not copy original audio; "
+                        f"it will be dubbed instead.", icon="!", color=C.YEL)
+        if kept:
+            log(f"{kept} chunk(s) set to original audio.", icon=G_OK, color=C.GRN)
+
     workers = args.workers if args.workers and args.workers > 0 else total  # no limit
     progress = {i: ("done (cached)" if it["dub"].exists() else "pending")
                 for i, it in enumerate(info)}
