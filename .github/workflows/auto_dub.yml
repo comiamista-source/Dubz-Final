@@ -25,10 +25,10 @@ on:
         default: "1"
       chunk:
         description: "Chunk length seconds"
-        default: "180"
+        default: "60"
       workers:
         description: "Parallel chunk workers per video"
-        default: "2"
+        default: "8"
       tries:
         description: "Retries per chunk"
         default: "5"
@@ -51,8 +51,8 @@ env:
   TGT: ${{ github.event.inputs.target || 'English' }}
   GENRE: ${{ github.event.inputs.genre || 'monologue' }}
   SPEAKERS: ${{ github.event.inputs.speakers || '1' }}
-  CHUNK: ${{ github.event.inputs.chunk || '180' }}
-  WORKERS: ${{ github.event.inputs.workers || '2' }}
+  CHUNK: ${{ github.event.inputs.chunk || '60' }}
+  WORKERS: ${{ github.event.inputs.workers || '8' }}
   TRIES: ${{ github.event.inputs.tries || '5' }}
   SKIP: ${{ github.event.inputs.skip || '' }}
   INBOX: ${{ github.event.inputs.inbox || 'Dubz/DubInbox2' }}
@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 10
       matrix: ${{ fromJson(needs.scan.outputs.matrix) }}
     timeout-minutes: 350
     steps:
