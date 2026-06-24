@@ -30,8 +30,8 @@ on:
         description: "Parallel chunk workers per video"
         default: "8"
       tries:
-        description: "Retries per chunk"
-        default: "5"
+        description: "Retries per chunk (1 = instant fallback, no retry)"
+        default: "1"
       skip:
         description: "Skip ranges - keep original audio (e.g. 0-30,end-45)"
         default: ""
@@ -53,7 +53,7 @@ env:
   SPEAKERS: ${{ github.event.inputs.speakers || '1' }}
   CHUNK: ${{ github.event.inputs.chunk || '60' }}
   WORKERS: ${{ github.event.inputs.workers || '8' }}
-  TRIES: ${{ github.event.inputs.tries || '5' }}
+  TRIES: ${{ github.event.inputs.tries || '1' }}
   SKIP: ${{ github.event.inputs.skip || '' }}
   INBOX: ${{ github.event.inputs.inbox || 'Dubz/DubInbox2' }}
   OUTBOX: ${{ github.event.inputs.outbox || 'Dubz/DubDone' }}
@@ -145,23 +145,6 @@ jobs:
           COMMON="--src $SRC --target $TGT --genre $GENRE --speakers $SPEAKERS --dir $GITHUB_WORKSPACE/output --chunk $CHUNK --workers $WORKERS --tries $TRIES"
           [ -n "$SKIP" ] && COMMON="$COMMON --skip $SKIP"
           python dub_video.py "$GITHUB_WORKSPACE/input/$IN" $COMMON || true
-          WORKDIR=$(ls -d "$GITHUB_WORKSPACE"/work_* 2>/dev/null | head -n1)
-          if [ -n "$WORKDIR" ] && [ -d "$WORKDIR/chunks" ]; then
-            MAX_PASSES=5; PASS=0
-            while :; do
-              TOTAL=$(ls "$WORKDIR/chunks"/part_*.mp4 2>/dev/null | wc -l)
-              DONE=$(ls "$WORKDIR/chunks"/dub_*.mp4 2>/dev/null | wc -l)
-              MISSING=$(( TOTAL - DONE ))
-              echo "::notice::$IN - $DONE/$TOTAL chunks done, $MISSING missing (pass $PASS)."
-              [ "$MISSING" -le 0 ] && { echo "All chunks complete."; break; }
-              PASS=$(( PASS + 1 ))
-              [ "$PASS" -gt "$MAX_PASSES" ] && { echo "::warning::$MISSING chunk(s) still missing."; break; }
-              PREV=$DONE
-              python dub_video.py "$WORKDIR/chunks" $COMMON || true
-              NOWDONE=$(ls "$WORKDIR/chunks"/dub_*.mp4 2>/dev/null | wc -l)
-              [ "$NOWDONE" -le "$PREV" ] && { echo "No new chunks; cooling 30s..."; sleep 30; }
-            done
-          fi
           if [ -n "$(ls -A output/ 2>/dev/null)" ]; then
             rclone copy output/ "gdrive:${OUTBOX}" --transfers 2 --drive-chunk-size 64M -v
             rclone moveto "gdrive:${INBOX}/${REF}" "gdrive:${INBOX}/archive/${REF}" -v || \
