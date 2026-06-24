@@ -1,0 +1,26 @@
+WHAT'S NEW (this updated package)
+=================================
+
+1. SKIP INTRO/OUTRO MUSIC  (--skip)
+   On a manual GitHub run there is now a "Skip ranges" box.
+   Type ranges to KEEP ORIGINAL audio (not dub), e.g.:
+       0-30,end-45      -> keep first 30s + last 45s as original
+       end-60           -> keep last 60s (outro song)
+       90-120           -> keep 90s..120s
+   "end" = end of video; "end-45" = the last 45 seconds.
+   Everything outside the skip ranges is dubbed normally.
+   CLI:  python dub_video.py video.mp4 --skip 0-30,end-45
+   Note: works per-chunk. With 60s chunks a 0-30 skip keeps the
+   whole first 60s. For tighter intros use a smaller --chunk.
+
+2. PER-CHUNK RETRY LOGGING
+   The run log now prints exactly which chunk is retrying:
+       chunk 47 retry 2/5: <reason>
+       chunk 47 FAILED after 5 tries: <reason>
+
+3. MATRIX CAPPED AT 10
+   A run processes at most 10 videos (max-parallel: 10).
+   Drop more than 10 in the inbox -> first 10 run, rest wait
+   for your next manual run.
+
+Repo: github.com/comiamista-source/Dubz-Final
