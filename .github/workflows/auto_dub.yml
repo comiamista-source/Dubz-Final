@@ -51,6 +51,7 @@ env:
   CHUNK: ${{ github.event.inputs.chunk || '60' }}
   WORKERS: ${{ github.event.inputs.workers || '8' }}
   TRIES: ${{ github.event.inputs.tries || '5' }}
+  SKIP: ${{ github.event.inputs.skip || '' }}
   INBOX: ${{ github.event.inputs.inbox || 'Dubz/DubInbox2' }}
   OUTBOX: ${{ github.event.inputs.outbox || 'Dubz/DubDone' }}
 
@@ -83,7 +84,7 @@ jobs:
           echo "Found $COUNT video(s) in ${INBOX}:"
           cat vids.txt || true
           # Build JSON matrix with jq: [{"ref":"file1.mp4"}, ...]
-          ITEMS=$(jq -R -s -c 'split("\n") | map(select(length>0)) | map({ref: .})' vids.txt)
+          ITEMS=$(jq -R -s -c 'split("\n") | map(select(length>0)) | .[0:10] | map({ref: .})' vids.txt)
           echo "matrix={\"item\":$ITEMS}" >> "$GITHUB_OUTPUT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
@@ -93,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 256
+      max-parallel: 10
       matrix: ${{ fromJson(needs.scan.outputs.matrix) }}
     timeout-minutes: 350
     steps:
@@ -139,6 +140,7 @@ jobs:
           IN=$(ls input/ | head -n1)
           echo "==> Dubbing: $IN"
           COMMON="--src $SRC --target $TGT --genre $GENRE --speakers $SPEAKERS --dir $GITHUB_WORKSPACE/output --chunk $CHUNK --workers $WORKERS --tries $TRIES"
+          [ -n "$SKIP" ] && COMMON="$COMMON --skip $SKIP"
           python dub_video.py "$GITHUB_WORKSPACE/input/$IN" $COMMON || true
           WORKDIR=$(ls -d "$GITHUB_WORKSPACE"/work_* 2>/dev/null | head -n1)
           if [ -n "$WORKDIR" ] && [ -d "$WORKDIR/chunks" ]; then
