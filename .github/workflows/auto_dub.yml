@@ -147,12 +147,6 @@ jobs:
           python dub_video.py "$GITHUB_WORKSPACE/input/$IN" $COMMON || true
           if [ -n "$(ls -A output/ 2>/dev/null)" ]; then
             rclone copy output/ "gdrive:${OUTBOX}" --transfers 2 --drive-chunk-size 64M -v
-            # Send raw failed-chunk files to the chunk-completer inbox (Dubz/Chunks).
-            for d in output/*\ -\ FAILED_CHUNKS; do
-              [ -d "$d" ] || continue
-              echo "Uploading failed chunks from $d -> Dubz/Chunks"
-              rclone copy "$d" "gdrive:Dubz/Chunks" --transfers 2 --drive-chunk-size 64M -v || true
-            done
             rclone moveto "gdrive:${INBOX}/${REF}" "gdrive:${INBOX}/archive/${REF}" -v || \
               echo "::warning::Could not archive ${REF}."
             echo "==> $IN done -> ${OUTBOX}."
